@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -20,6 +24,7 @@ jobs:
       - run: python3 tests/check_package.py
 
   build:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -81,3 +86,25 @@ jobs:
       - name: Remove runner signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/fail2ban-manager-signing.pem"
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: luci-app-fail2ban-manager-openwrt-25.12
+          path: dist
+      - name: Publish signed APK and verification files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag \
+            --title "LuCI Fail2ban Manager $RELEASE_TAG" \
+            --notes 'OpenWrt 25.12 APK. Existing Fail2ban rules are not replaced. Read README.md and verify the publisher key before installing. One-build keys rotate unless APK_SIGNING_KEY is configured.' \
+            dist/*.apk dist/*.pem dist/SHA256SUMS dist/PUBLIC_KEY_SHA256 dist/README.md dist/LICENSE

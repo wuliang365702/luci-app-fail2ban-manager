@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fail2ban Manager Fixture</title>
+<style>
+body{font:14px Arial,sans-serif;color:#30363b;margin:24px;letter-spacing:0}
+table{border-collapse:collapse}th,td{text-align:left;padding:12px 8px;border-bottom:1px solid #ddd}
+th{background:#f7f8f9}h2{font-size:24px}h3{font-size:20px;margin-top:28px}
+button,select{min-height:32px;border:1px solid #bbb;border-radius:4px;background:white;padding:4px 12px}
+dialog{max-width:calc(100% - 40px);border:1px solid #aaa;border-radius:4px}.right{text-align:right}
+</style>
+<main id="app"></main>
+<dialog id="modal"></dialog>
+<script>
+function E(tag, attrs, children) {
+    const node = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs || {})) {
+        if (typeof value === 'function') node.addEventListener(name, value);
+        else node.setAttribute(name, value);
+    }
+    for (const child of Array.isArray(children) ? children : [children]) {
+        if (child !== undefined && child !== null) node.append(child instanceof Node ? child : String(child));
+    }
+    return node;
+}
+const fixture = {
+    ok:true, unavailable:[], history_warnings:[],
+    jails:[
+        {jail:'dropbear', label:'SSH', failed:0, maxretry:5,findtime:600,bantime:600,ips:[]},
+        {jail:'nginx-auth',label:'nginx-auth',failed:2,maxretry:4,findtime:300,bantime:-1,ips:['2001:db8::10']}
+    ],
+    events:[{time:'2026-09-06 22:09:12',jail:'nginx-auth',action:'Ban',ip:'2001:db8::10'},
+            {time:'Fri Oct 16 10:18:02 2026',jail:'retired-jail',action:'Unban',ip:'192.0.2.10'}]
+};
+const rpc = {declare: options => options.method === 'snapshot' ? async () => structuredClone(fixture) : async (jail,ip) => {
+    const entry = fixture.jails.find(item => item.jail === jail);
+    entry.ips = entry.ips.filter(item => item !== ip);
+    return {ok:true};
+}};
+const modal = document.querySelector('#modal');
+const ui = {
+    hideModal: () => modal.close(),
+    showModal: (title,children) => {modal.replaceChildren(E('h3',{},title),...children);modal.showModal();},
+    addNotification: (_, node) => document.body.append(node)
+};
+const poll = {add: () => {}};
+const L = {hasViewPermission: () => !new URLSearchParams(location.search).has('readonly')};
+const view = {extend: value => value};
+fetch('../root/www/luci-static/resources/view/fail2ban/manager.js').then(r=>r.text()).then(async source=>{
+    const page = new Function('E','rpc','ui','poll','L','view',source)(E,rpc,ui,poll,L,view);
+    document.querySelector('#app').append(page.render(await page.load()));
+}).catch(error => {document.querySelector('#app').textContent = error.stack; console.error(error);});
+</script>
+</html>

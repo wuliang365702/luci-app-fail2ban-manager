@@ -133,6 +133,7 @@ def recent_events():
     filenames, use_syslog = log_sources()
     batches = []
     warnings = []
+    readable_files = 0
     for filename in filenames:
         try:
             path = Path(filename)
@@ -151,6 +152,7 @@ def recent_events():
             if offset:
                 lines = lines[1:]
             batches.append(lines)
+            readable_files += 1
         except OSError:
             continue
     if use_syslog:
@@ -194,6 +196,8 @@ def recent_events():
                 seen_events.add(identity)
                 events.append(event)
     events.sort(key=lambda event: event["time"])
+    if filenames and not readable_files:
+        warnings.append("log_files_unavailable")
     if not filenames and not use_syslog:
         warnings.append("history_unavailable")
     return list(reversed(events[-EVENT_LIMIT:])), warnings

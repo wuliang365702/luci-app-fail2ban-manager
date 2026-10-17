@@ -6,7 +6,7 @@
 
 var snapshot = rpc.declare({ object: 'luci.fail2ban', method: 'snapshot' });
 var unban = rpc.declare({ object: 'luci.fail2ban', method: 'unban', params: ['jail', 'ip'] });
-var labels = { dropbear: 'SSH', 'luci-auth': 'Web' };
+var labels = Object.assign(Object.create(null), { dropbear: 'SSH', 'luci-auth': 'Web' });
 var actions = { Ban: '\u5c01\u7981', Unban: '\u89e3\u5c01', 'Restore Ban': '\u6062\u590d\u5c01\u7981', 'Manual unban': '\u624b\u52a8\u89e3\u5c01' };
 
 function formatTime(value) {
@@ -89,7 +89,7 @@ return view.extend({
 
     draw: function() {
         var self = this, data = self.data || {}, group = self.group.value;
-        var names = {};
+        var names = Object.create(null);
         (data.jails || []).forEach(function(jail) { names[jail.jail] = jail.label; });
         (data.events || []).forEach(function(event) { if (!names[event.jail]) names[event.jail] = event.jail; });
         while (self.group.options.length > 1) self.group.remove(1);
@@ -101,7 +101,7 @@ return view.extend({
         group = self.group.value;
         var jails = (data.jails || []).filter(function(jail) { return !group || jail.jail === group; });
         var rows = [];
-        self.status.textContent = data.ok ? '\u8fd0\u884c\u4e2d \u00b7 ' + formatTime(new Date()) : '\u670d\u52a1\u4e0d\u53ef\u7528\uff1a' + (data.unavailable || []).join(', ');
+        self.status.textContent = data.ok ? '\u8fd0\u884c\u4e2d \u00b7 ' + formatTime(new Date()) : '\u670d\u52a1\u4e0d\u53ef\u7528\uff1a' + ((data.unavailable || []).join(', ') || data.error || 'RPC error');
         while (self.bans.rows.length > 1) self.bans.deleteRow(1);
         while (self.events.rows.length > 1) self.events.deleteRow(1);
         while (self.policies.rows.length > 1) self.policies.deleteRow(1);

@@ -14,7 +14,7 @@ OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 
 
 ## 获取和验证
 
-打开仓库 **Actions → Build OpenWrt APK → 成功的运行 → Artifacts**，下载 `luci-app-fail2ban-manager-openwrt-25.12`。解压后包含 APK、公钥、校验文件和说明。只有成功构建后的产物才是安装包，源代码 ZIP 不能直接安装。
+正式版本在仓库 **Releases** 下载，公开发布后安装者无需 GitHub 登录。也可打开 **Actions → Build OpenWrt APK → 成功的运行 → Artifacts**，下载 `luci-app-fail2ban-manager-openwrt-25.12`。解压后包含 APK、公钥、校验文件和说明。只有成功构建后的产物才是安装包，源代码 ZIP 不能直接安装。
 
 1. 确认下载来自本仓库的正确构建/提交。
 2. 在下载目录执行 `sha256sum -c SHA256SUMS`。校验文件来自同一下载，只能检查传输损坏，不能独立证明发布者身份。
@@ -59,7 +59,7 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.0-r1.apk
 
 ## GitHub Actions 与签名
 
-推送 `main`、推送 `v*` 标签或手动运行工作流都会先测试，再用固定提交的官方 `openwrt/gh-action-sdk` 构建。只上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。
+推送 `main` 和拉取请求先执行测试；推送 `v*` 标签或手动运行工作流时，测试通过后使用固定提交的官方 `openwrt/gh-action-sdk` 构建。只上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。标签构建成功后自动发布 Release，只有发布 job 具有仓库写权限。
 
 首次试构建无需 Secrets，会生成仅本次运行使用的签名密钥并在结束时删除。**这种情况下每次构建的公钥不同**，不能把它当成稳定更新源。
 
