@@ -1,0 +1,8 @@
+{
+  "admin/services/fail2ban-manager": {
+    "title": "Fail2ban",
+    "order": 65,
+    "action": { "type": "view", "path": "fail2ban/manager" },
+    "depends": { "acl": [ "luci-app-fail2ban-manager" ] }
+  }
+}

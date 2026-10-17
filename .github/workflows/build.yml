@@ -1,0 +1,79 @@
+name: Build OpenWrt APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 test_backend.py
+      - run: node test_frontend.cjs
+      - run: python3 tests/check_package.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare isolated package feed
+        run: |
+          mkdir -p feed/luci-app-fail2ban-manager artifacts dist
+          cp Makefile feed/luci-app-fail2ban-manager/
+          cp -R root feed/luci-app-fail2ban-manager/
+      - name: Prepare APK signing key
+        env:
+          SAVED_KEY: ${{ github.event_name != 'pull_request' && secrets.APK_SIGNING_KEY || '' }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/fail2ban-manager-signing.pem"
+          if [ -n "$SAVED_KEY" ]; then
+            printf '%s\n' "$SAVED_KEY" > "$key"
+          else
+            openssl ecparam -name prime256v1 -genkey -noout -out "$key"
+            echo '::warning::One-build signing key. Configure APK_SIGNING_KEY for stable release trust.'
+          fi
+          openssl pkey -in "$key" -pubout -out dist/luci-fail2ban-manager.pem
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          key = (Path(os.environ['RUNNER_TEMP']) / 'fail2ban-manager-signing.pem').read_text().strip()
+          print('::add-mask::' + key.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('PRIVATE_KEY<<F2B_SIGNING_KEY\n' + key + '\nF2B_SIGNING_KEY\n')
+          PY
+      - name: Build using official OpenWrt SDK
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
+        env:
+          ARCH: x86_64-25.12.5
+          FEED_DIR: ${{ github.workspace }}/feed
+          ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
+          FEEDNAME: manager
+          PACKAGES: luci-app-fail2ban-manager
+          INDEX: '1'
+          V: s
+      - name: Collect only the manager APK and public key
+        run: |
+          find artifacts/bin -name 'luci-app-fail2ban-manager-*.apk' -exec cp '{}' dist/ \;
+          test "$(find dist -name '*.apk' | wc -l)" -eq 1
+          cp README.md LICENSE dist/
+          cd dist
+          sha256sum *.apk *.pem > SHA256SUMS
+          openssl pkey -pubin -in luci-fail2ban-manager.pem -outform DER | sha256sum > PUBLIC_KEY_SHA256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: luci-app-fail2ban-manager-openwrt-25.12
+          path: dist/
+          if-no-files-found: error
+      - name: Remove runner signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/fail2ban-manager-signing.pem"

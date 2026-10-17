@@ -1,0 +1,271 @@
+#!/usr/bin/python3
+"""Narrow, authenticated rpcd interface to the existing Fail2ban instance."""
+import ipaddress
+import json
+import re
+import subprocess
+import sys
+import stat
+import threading
+from pathlib import Path
+
+from fail2ban.client.csocket import CSocket
+
+LABELS = {"dropbear": "SSH", "sshd": "SSH", "luci-auth": "Web"}
+SOCKET = "/var/run/fail2ban/fail2ban.sock"
+CONFIG = "/etc/fail2ban-manager.json"
+MAX_INPUT = 8192
+MAX_LOG_BYTES = 262144
+EVENT_LIMIT = 200
+JAIL_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")
+EVENT_RE = re.compile(r"fail2ban\.actions(?:\s*\[\d+\])?\s*:?\s+\w+\s+\[(?P<jail>[A-Za-z0-9_.-]+)\]\s+(?P<action>Restore Ban|Ban|Unban)\s+(?P<ip>\S+)\s*$")
+AUDIT_RE = re.compile(r"luci-fail2ban(?:\[\d+\])?:\s+Manual unban jail=(?P<jail>[A-Za-z0-9_.-]+) ip=(?P<ip>\S+)\s*$")
+
+
+def settings():
+    try:
+        with open(CONFIG, encoding="utf-8") as source:
+            value = json.loads(source.read(MAX_INPUT + 1))
+        if not isinstance(value, dict):
+            raise ValueError("Invalid manager configuration")
+        return value
+    except FileNotFoundError:
+        return {}
+
+
+def active_jails():
+    names = dict(call(["status"])).get("Jail list", [])
+    if isinstance(names, str):
+        names = [name.strip() for name in names.split(",") if name.strip()]
+    if not isinstance(names, (list, tuple)) or len(names) > 128:
+        raise ServiceError("Invalid jail list")
+    if any(not isinstance(name, str) or not JAIL_RE.fullmatch(name) for name in names):
+        raise ServiceError("Unsupported jail name")
+    return list(dict.fromkeys(names))
+
+
+class ServiceError(Exception):
+    pass
+
+
+def call(command):
+    socket = settings().get("socket", SOCKET)
+    if not isinstance(socket, str) or not socket.startswith("/"):
+        raise ValueError("Invalid socket path")
+    connection = CSocket(socket, timeout=2)
+    try:
+        result = connection.send(command)
+    finally:
+        connection.close()
+    if not isinstance(result, (tuple, list)) or len(result) != 2 or result[0] != 0:
+        raise ServiceError("Fail2ban request failed")
+    return result[1]
+
+
+def normalize_ip(value):
+    if not isinstance(value, str) or len(value) > 45 or "%" in value:
+        raise ValueError("Invalid IP address")
+    return str(ipaddress.ip_address(value))
+
+
+def jail_status(jail):
+    raw = dict(call(["status", jail]))
+    actions = dict(raw.get("Actions", []))
+    filters = dict(raw.get("Filter", []))
+    addresses = []
+    for value in actions.get("Banned IP list", []):
+        try:
+            addresses.append(normalize_ip(value))
+        except ValueError:
+            continue
+    return {
+        "jail": jail,
+        "label": LABELS.get(jail, jail),
+        "ips": addresses,
+        "failed": int(filters.get("Currently failed", 0)),
+        "total_failed": int(filters.get("Total failed", 0)),
+        "total_banned": int(actions.get("Total banned", 0)),
+        "maxretry": int(call(["get", jail, "maxretry"])),
+        "findtime": int(call(["get", jail, "findtime"])),
+        "bantime": int(call(["get", jail, "bantime"])),
+    }
+
+
+def log_sources():
+    configured = settings().get("log_files")
+    if configured is not None:
+        if (not isinstance(configured, list) or len(configured) > 8 or
+                any(not isinstance(p, str) or not p.startswith("/") for p in configured)):
+            raise ValueError("Invalid log paths")
+        return configured, False
+    target = call(["get", "logtarget"])
+    if isinstance(target, str) and target.startswith("/"):
+        return [target + ".1", target], True
+    if str(target).upper().startswith("SYSLOG"):
+        try:
+            result = subprocess.run(["/sbin/uci", "-q", "get", "system.@system[0].log_file"],
+                                    capture_output=True, timeout=2, check=False)
+            filename = result.stdout.decode("utf-8", errors="replace").strip()
+            if result.returncode == 0 and filename.startswith("/"):
+                return [filename + ".old", filename + ".1", filename], True
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return [], True
+    return [], False
+
+
+def format_timestamp(line):
+    iso = re.match(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})", line)
+    if iso:
+        return iso[1] + " " + iso[2]
+    value = re.match(r"\w{3} (\w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})", line)
+    if value:
+        month, day, clock, year = value[1].split()
+        months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+        if month in months:
+            return f"{year}-{months.index(month) + 1:02d}-{int(day):02d} {clock}"
+    return ""
+
+
+def recent_events():
+    events = []
+    seen_files = set()
+    filenames, use_syslog = log_sources()
+    batches = []
+    warnings = []
+    for filename in filenames:
+        try:
+            path = Path(filename)
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            identity = (info.st_dev, info.st_ino)
+            if identity in seen_files:
+                continue
+            seen_files.add(identity)
+            with path.open("rb") as source:
+                offset = max(0, info.st_size - MAX_LOG_BYTES)
+                source.seek(offset)
+                data = source.read(MAX_LOG_BYTES)
+            lines = data.decode("utf-8", errors="replace").splitlines()
+            if offset:
+                lines = lines[1:]
+            batches.append(lines)
+        except OSError:
+            continue
+    if use_syslog:
+        try:
+            # logread has no follow option here; bound both execution and output.
+            with subprocess.Popen(["/sbin/logread", "-l", "1000"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL) as process:
+                timer = threading.Timer(2, process.kill)
+                timer.start()
+                try:
+                    data = process.stdout.read(MAX_LOG_BYTES + 1)
+                    if len(data) > MAX_LOG_BYTES:
+                        process.kill()
+                        warnings.append("logread_truncated")
+                    process.wait(timeout=3)
+                    if process.returncode != 0:
+                        warnings.append("logread_unavailable")
+                    batches.append(data[:MAX_LOG_BYTES].decode("utf-8", errors="replace").splitlines())
+                finally:
+                    timer.cancel()
+        except (OSError, subprocess.SubprocessError):
+            warnings.append("logread_unavailable")
+    seen_events = set()
+    for lines in batches:
+        for line in lines:
+            match = EVENT_RE.search(line) or AUDIT_RE.search(line)
+            if not match:
+                continue
+            try:
+                ip = normalize_ip(match["ip"])
+            except ValueError:
+                continue
+            event = {
+                "time": format_timestamp(line),
+                "jail": match["jail"],
+                "action": match.groupdict().get("action", "Manual unban"),
+                "ip": ip,
+            }
+            identity = tuple(event.values())
+            if identity not in seen_events:
+                seen_events.add(identity)
+                events.append(event)
+    events.sort(key=lambda event: event["time"])
+    if not filenames and not use_syslog:
+        warnings.append("history_unavailable")
+    return list(reversed(events[-EVENT_LIMIT:])), warnings
+
+
+def snapshot():
+    jails = []
+    errors = []
+    for jail in active_jails():
+        try:
+            jails.append(jail_status(jail))
+        except (ServiceError, OSError, ValueError, TypeError):
+            errors.append(jail)
+    events, warnings = recent_events()
+    return {"ok": not errors, "jails": jails, "unavailable": errors,
+            "events": events, "history_warnings": warnings, "event_limit": EVENT_LIMIT}
+
+
+def unban(params):
+    jail = params.get("jail")
+    if not isinstance(jail, str) or not JAIL_RE.fullmatch(jail):
+        return {"ok": False, "error": "invalid_jail"}
+    try:
+        ip = normalize_ip(params.get("ip"))
+    except ValueError:
+        return {"ok": False, "error": "invalid_ip"}
+    if jail not in active_jails():
+        return {"ok": False, "error": "invalid_jail"}
+    current = jail_status(jail)
+    if ip not in current["ips"]:
+        return {"ok": False, "error": "not_banned"}
+    call(["set", jail, "unbanip", ip])
+    if ip in jail_status(jail)["ips"]:
+        raise ServiceError("Unban did not take effect")
+    try:
+        subprocess.run(["/usr/bin/logger", "-p", "authpriv.notice", "-t",
+                        "luci-fail2ban", f"Manual unban jail={jail} ip={ip}"],
+                       check=True, timeout=2, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return {"ok": True, "audit_warning": True}
+    return {"ok": True}
+
+
+def dispatch(method, params):
+    if method == "snapshot":
+        return snapshot()
+    if method == "unban":
+        return unban(params)
+    return {"ok": False, "error": "invalid_method"}
+
+
+def main():
+    if sys.argv[1:] == ["list"]:
+        result = {"snapshot": {}, "unban": {"jail": "", "ip": ""}}
+    elif len(sys.argv) == 3 and sys.argv[1] == "call":
+        try:
+            raw = sys.stdin.read(MAX_INPUT + 1)
+            if len(raw) > MAX_INPUT:
+                raise ValueError("Request too large")
+            params = json.loads(raw or "{}")
+            if not isinstance(params, dict):
+                raise ValueError("Invalid request")
+            result = dispatch(sys.argv[2], params)
+        except (ValueError, TypeError):
+            result = {"ok": False, "error": "invalid_request"}
+        except (ServiceError, OSError):
+            result = {"ok": False, "error": "service_unavailable"}
+    else:
+        result = {"ok": False, "error": "invalid_method"}
+    print(json.dumps(result, ensure_ascii=True))
+
+
+if __name__ == "__main__":
+    main()
