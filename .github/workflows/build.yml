@@ -65,6 +65,10 @@ jobs:
         run: |
           find artifacts/bin -name 'luci-app-fail2ban-manager-*.apk' -exec cp '{}' dist/ \;
           test "$(find dist -name '*.apk' | wc -l)" -eq 1
+          docker run --rm --user "$(id -u):$(id -g)" --entrypoint /bin/bash \
+            -v "$GITHUB_WORKSPACE/dist:/dist" \
+            -v "$RUNNER_TEMP/fail2ban-manager-signing.pem:/signing.pem:ro" \
+            sdk -c 'staging_dir/host/bin/apk adbsign --sign /signing.pem /dist/*.apk && staging_dir/host/bin/apk verify --keys-dir /dist /dist/*.apk'
           cp README.md LICENSE dist/
           cd dist
           sha256sum *.apk *.pem > SHA256SUMS
