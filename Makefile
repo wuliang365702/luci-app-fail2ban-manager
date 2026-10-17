@@ -2,15 +2,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-fail2ban-manager
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.0.2
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=wuliang365702
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/luci-app-fail2ban-manager
+  PKGARCH:=all
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications

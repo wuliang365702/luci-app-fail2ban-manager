@@ -22,6 +22,7 @@ jobs:
       - run: python3 test_backend.py
       - run: node test_frontend.cjs
       - run: python3 tests/check_package.py
+      - run: python3 -m unittest discover -s tests -p test_signing.py
 
   build:
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -75,12 +76,15 @@ jobs:
             -v "$GITHUB_WORKSPACE/feed:/feed" \
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts" \
             -v "$GITHUB_WORKSPACE/dist:/public-key:ro" \
+            -v "$GITHUB_WORKSPACE/ci:/ci:ro" \
             --entrypoint /bin/bash manager-sdk -ec '
+              if [ -f setup.sh ]; then
+                bash setup.sh
+                mv setup.sh setup.completed.sh
+              fi
+              python3 /ci/signing.py prepare --public-key /public-key/luci-fail2ban-manager.pem
               bash /entrypoint.sh
-              mapfile -t packages < <(find /artifacts/bin -name "luci-app-fail2ban-manager-*.apk")
-              test "${#packages[@]}" -eq 1
-              staging_dir/host/bin/apk adbsign --sign private-key.pem "${packages[0]}"
-              staging_dir/host/bin/apk verify --keys-dir /public-key "${packages[0]}"
+              python3 /ci/signing.py verify --public-key /public-key/luci-fail2ban-manager.pem
             '
       - name: Restore output ownership
         if: always()
@@ -89,9 +93,10 @@ jobs:
         run: |
           find artifacts/bin -name 'luci-app-fail2ban-manager-*.apk' -exec cp '{}' dist/ \;
           test "$(find dist -name '*.apk' | wc -l)" -eq 1
+          cp artifacts/signing-verification.json dist/
           cp README.md LICENSE dist/
           cd dist
-          sha256sum *.apk *.pem > SHA256SUMS
+          sha256sum *.apk *.pem signing-verification.json > SHA256SUMS
           openssl pkey -pubin -in luci-fail2ban-manager.pem -outform DER | sha256sum > PUBLIC_KEY_SHA256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -122,4 +127,4 @@ jobs:
           gh release create "$RELEASE_TAG" --verify-tag \
             --title "LuCI Fail2ban Manager $RELEASE_TAG" \
             --notes 'OpenWrt 25.12 APK. Existing Fail2ban rules are not replaced. Read README.md and verify the publisher key before installing. One-build keys rotate unless APK_SIGNING_KEY is configured.' \
-            dist/*.apk dist/*.pem dist/SHA256SUMS dist/PUBLIC_KEY_SHA256 dist/README.md dist/LICENSE
+            dist/*.apk dist/*.pem dist/SHA256SUMS dist/PUBLIC_KEY_SHA256 dist/signing-verification.json dist/README.md dist/LICENSE

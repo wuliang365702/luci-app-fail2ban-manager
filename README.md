@@ -24,7 +24,7 @@ OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 
 ```sh
 mkdir -p /etc/apk/keys
 cp /tmp/luci-fail2ban-manager.pem /etc/apk/keys/luci-fail2ban-manager.pem
-apk add /tmp/luci-app-fail2ban-manager-1.0.1-r1.apk
+apk add /tmp/luci-app-fail2ban-manager-1.0.2-r1.apk
 ```
 
 以实际产物文件名为准。不要全局关闭签名校验，不需要 `--force-overwrite`。页面位于 **服务 → Fail2ban**。如浏览器缓存旧页面，强制刷新后重新进入。
@@ -59,7 +59,11 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.1-r1.apk
 
 ## GitHub Actions 与签名
 
-推送 `main` 和拉取请求先执行测试；推送 `v*` 标签或手动运行工作流时，测试通过后使用官方 SDK 镜像和固定提交的 `openwrt/gh-action-sdk` 构建入口。在同一个容器内完成 APK 签名和验签后，只上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。标签构建成功后自动发布 Release，只有发布 job 具有仓库写权限。
+推送 `main` 和拉取请求先执行测试；推送 `v*` 标签或手动运行工作流时，测试通过后使用官方 SDK 镜像和固定提交的 `openwrt/gh-action-sdk` 构建入口。构建容器对 SDK 的 `mkpkg` 规则应用一个受格式检查保护的补丁，让启用签名时在创建 APK 的同时签名，而不是对未签名输入追加签名。SDK 格式发生变化则停止构建，不静默继续。
+
+依赖编译前先检查密钥对，并用小包验证正确公钥通过、无公钥/错误公钥/截断包/未签名包均被拒绝。真实 APK 构建完成后再次进行严格验签及负向测试，并检查实际架构为 `noarch`。不会使用跳过信任检查的安装或验签选项。结果随包提供为 `signing-verification.json`，包含包和公钥指纹。
+
+只有这些检查通过后，才上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。标签构建成功后自动发布 Release，只有发布 job 具有仓库写权限。
 
 首次试构建无需 Secrets，会生成仅本次运行使用的签名密钥并在结束时删除。**这种情况下每次构建的公钥不同**，不能把它当成稳定更新源。
 
@@ -79,6 +83,7 @@ openssl pkey -in private-key.pem -pubout -out luci-fail2ban-manager.pem
 python3 test_backend.py
 node test_frontend.cjs
 python3 tests/check_package.py
+python3 -m unittest discover -s tests -p test_signing.py
 ```
 
 源码可作为 OpenWrt package/feed 编译；无需重新编译整个固件。SDK 和工作流依赖参考 [OpenWrt SDK](https://openwrt.org/docs/guide-developer/toolchain/using_the_sdk)、[官方 SDK Action](https://github.com/openwrt/gh-action-sdk)。

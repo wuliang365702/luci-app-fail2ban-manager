@@ -18,6 +18,7 @@ acl = json.loads((root / 'root/usr/share/rpcd/acl.d/luci-app-fail2ban-manager.js
 assert acl['read']['ubus'] == {'luci.fail2ban': ['snapshot']}
 assert acl['write']['ubus'] == {'luci.fail2ban': ['unban']}
 makefile = (root / 'Makefile').read_text()
+assert 'define Package/luci-app-fail2ban-manager\n  PKGARCH:=all\n' in makefile
 for forbidden in ('/etc/init.d/fail2ban', '/etc/init.d/firewall', 'uci set', 'uci commit'):
     assert forbidden not in makefile, forbidden
 for name in expected:
