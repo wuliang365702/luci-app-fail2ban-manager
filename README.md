@@ -24,7 +24,7 @@ OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 
 ```sh
 mkdir -p /etc/apk/keys
 cp /tmp/luci-fail2ban-manager.pem /etc/apk/keys/luci-fail2ban-manager.pem
-apk add /tmp/luci-app-fail2ban-manager-1.0.0-r1.apk
+apk add /tmp/luci-app-fail2ban-manager-1.0.1-r1.apk
 ```
 
 以实际产物文件名为准。不要全局关闭签名校验，不需要 `--force-overwrite`。页面位于 **服务 → Fail2ban**。如浏览器缓存旧页面，强制刷新后重新进入。
@@ -59,7 +59,7 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.0-r1.apk
 
 ## GitHub Actions 与签名
 
-推送 `main` 和拉取请求先执行测试；推送 `v*` 标签或手动运行工作流时，测试通过后使用固定提交的官方 `openwrt/gh-action-sdk` 构建。只上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。标签构建成功后自动发布 Release，只有发布 job 具有仓库写权限。
+推送 `main` 和拉取请求先执行测试；推送 `v*` 标签或手动运行工作流时，测试通过后使用官方 SDK 镜像和固定提交的 `openwrt/gh-action-sdk` 构建入口。在同一个容器内完成 APK 签名和验签后，只上传本插件 APK 和公钥，不上传依赖包、私钥或路由器配置。标签构建成功后自动发布 Release，只有发布 job 具有仓库写权限。
 
 首次试构建无需 Secrets，会生成仅本次运行使用的签名密钥并在结束时删除。**这种情况下每次构建的公钥不同**，不能把它当成稳定更新源。
 

@@ -72,7 +72,7 @@ return view.extend({
             });
         } }, '\u786e\u8ba4\u89e3\u5c01');
         ui.showModal('\u89e3\u9664\u5c01\u7981', [
-            E('p', {}, (labels[jail] || jail) + ' \u00b7 ' + ip),
+            E('p', { 'style': 'overflow-wrap:anywhere' }, (labels[jail] || jail) + ' \u00b7 ' + ip),
             E('div', { 'class': 'right' }, [cancel, ' ', confirm])
         ]);
     },
@@ -135,9 +135,9 @@ return view.extend({
         var self = this;
         self.data = data;
         self.writable = L.hasViewPermission();
-        self.status = E('span', { 'role': 'status', 'aria-live': 'polite' });
+        self.status = E('span', { 'role': 'status', 'aria-live': 'polite', 'style': 'max-width:100%;overflow-wrap:anywhere' });
         self.historyWarning = E('p', { 'role': 'status' });
-        self.group = E('select', { 'aria-label': '\u670d\u52a1\u7b5b\u9009', 'change': function() { self.draw(); } }, [
+        self.group = E('select', { 'aria-label': '\u670d\u52a1\u7b5b\u9009', 'style': 'max-width:100%;min-width:0', 'change': function() { self.draw(); } }, [
             E('option', { 'value': '' }, '\u5168\u90e8\u670d\u52a1')
         ]);
         self.policies = table(['\u670d\u52a1', '\u5f53\u524d\u5931\u8d25\u8ba1\u6570', '\u5931\u8d25\u9608\u503c', '\u5c01\u7981\u65f6\u957f']);
