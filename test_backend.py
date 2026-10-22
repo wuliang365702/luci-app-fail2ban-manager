@@ -28,7 +28,7 @@ class BackendTests(unittest.TestCase):
         self.calls = []
         self.banned = {"dropbear": ["192.0.2.10", "2001:db8::10"], "luci-auth": []}
         self.mock_call = patch.object(backend, "call", side_effect=self.command)
-        self.mock_call.start()
+        self.call_mock = self.mock_call.start()
         self.addCleanup(self.mock_call.stop)
 
     def command(self, args):
@@ -39,7 +39,11 @@ class BackendTests(unittest.TestCase):
             return [("Filter", [("Currently failed", 0), ("Total failed", 0)]),
                     ("Actions", [("Total banned", 2), ("Banned IP list", self.banned[args[1]][:])])]
         if args[0] == "get":
-            return {"maxretry": 5, "findtime": 600, "bantime": 600}[args[2]]
+            if args[2:] == ['banip', '--with-time']:
+                return ['192.0.2.10 2026-10-22 21:30:00 + 7200 = 2026-10-22 23:30:00',
+                        '2001:db8::10 2026-10-22 21:30:00 + -1 = 9999-12-31 23:59:59']
+            return {"maxretry": 5, "findtime": 600, "bantime": 600,
+                    "bantime.increment": args[1] == 'dropbear', "bantime.maxtime": 604800}[args[2]]
         if args[:1] == ["set"] and args[2] == "unbanip":
             self.banned[args[1]].remove(args[3])
             return 1
@@ -83,6 +87,37 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(len(data["jails"]), 2)
         self.assertEqual(data["jails"][0]["maxretry"], 5)
+
+    def test_ticket_expiry_uses_actual_incremented_duration(self):
+        result = backend.jail_status('dropbear')
+        self.assertEqual(result['expirations']['192.0.2.10']['time'], '2026-10-22 23:30:00')
+        self.assertTrue(result['expirations']['2001:db8::10']['permanent'])
+
+    def test_expiry_unsupported_keeps_status_available(self):
+        original = self.command
+        def command(args):
+            if args[2:] == ['banip', '--with-time']:
+                raise backend.ServiceError('unsupported')
+            return original(args)
+        self.call_mock.side_effect = command
+        self.assertEqual(backend.jail_status('dropbear')['expirations'], {})
+
+    def test_expiry_invalid_and_unbanned_entries_are_ignored(self):
+        original = self.command
+        def command(args):
+            if args[2:] == ['banip', '--with-time']:
+                return ['192.0.2.99 2026-10-22 21:30:00 + 600 = 2026-10-22 21:40:00',
+                        '192.0.2.10 2026-10-22 21:30:00 + 600 = <script>', None,
+                        'not-an-ip 2026-10-22 21:30:00 + 600 = 2026-10-22 21:40:00']
+            return original(args)
+        self.call_mock.side_effect = command
+        self.assertEqual(backend.jail_status('dropbear')['expirations'], {})
+
+    def test_runtime_policy_is_reported(self):
+        ssh = backend.jail_status('dropbear')
+        self.assertTrue(ssh['bantime_increment'])
+        self.assertEqual(ssh['bantime_maximum'], 604800)
+        self.assertFalse(backend.jail_status('luci-auth')['bantime_increment'])
 
     def test_logs_are_bounded_and_only_known_events_are_returned(self):
         with tempfile.TemporaryDirectory() as tmp:

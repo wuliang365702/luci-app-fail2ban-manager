@@ -78,10 +78,45 @@ def jail_status(jail):
             addresses.append(normalize_ip(value))
         except ValueError:
             continue
+    # Read ticket-specific expiry, including incremented bans; never infer from policy.
+    expirations = {}
+    try:
+        timed = call(["get", jail, "banip", "--with-time"])
+        if isinstance(timed, (list, tuple)):
+            for entry in timed:
+                if not isinstance(entry, str):
+                    continue
+                match = re.fullmatch(r"(\S+)\s+.+?\s+\+\s+(-?\d+)\s+=\s+(.+)", entry)
+                if not match:
+                    continue
+                try:
+                    ip = normalize_ip(match[1])
+                except ValueError:
+                    continue
+                if ip not in addresses:
+                    continue
+                expiry = re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?", match[3])
+                if int(match[2]) < 0:
+                    expirations[ip] = {"permanent": True}
+                elif expiry:
+                    expirations[ip] = {"time": match[3][:19], "permanent": False}
+    except ServiceError:
+        pass
+    increment, maximum = None, None
+    try:
+        value = call(["get", jail, "bantime.increment"])
+        increment = value is True or str(value).lower() in ("true", "1")
+        if increment:
+            maximum = int(call(["get", jail, "bantime.maxtime"]))
+    except (ServiceError, TypeError, ValueError):
+        pass
     return {
         "jail": jail,
         "label": LABELS.get(jail, jail),
         "ips": addresses,
+        "expirations": expirations,
+        "bantime_increment": increment,
+        "bantime_maximum": maximum,
         "failed": int(filters.get("Currently failed", 0)),
         "total_failed": int(filters.get("Total failed", 0)),
         "total_banned": int(actions.get("Total banned", 0)),

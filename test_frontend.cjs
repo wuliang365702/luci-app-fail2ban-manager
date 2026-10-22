@@ -15,6 +15,10 @@ assert.equal(context.formatTime(new Date(2026, 8, 6, 22, 9, 12)), '2026-09-06 22
 assert.equal(context.duration(-1), '\u6c38\u4e45');
 assert.equal(context.duration(30), '30\u79d2');
 assert.equal(context.duration(600), '10\u5206\u949f');
+assert.equal(context.policyText({bantime:3600,bantime_increment:true,bantime_maximum:604800}), '\u9996\u6b211\u5c0f\u65f6\uff0c\u91cd\u590d\u8fdd\u89c4\u9012\u589e\uff0c\u6700\u957f7\u5929');
+assert.equal(context.expiryText({time:'2026-10-22 23:30:00'}), '2026-10-22 23:30:00');
+assert.equal(context.expiryText({permanent:true}), '\u6c38\u4e45\u5c01\u7981');
+assert.equal(context.expiryText(null), '\u672a\u77e5');
 assert(!source.includes('toLocaleTimeString'));
 assert(source.includes('Object.keys(names).sort()'));
 assert(source.includes('Object.prototype.hasOwnProperty.call(names, group)'));

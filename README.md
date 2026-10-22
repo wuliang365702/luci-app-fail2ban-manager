@@ -24,7 +24,7 @@ OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 
 ```sh
 mkdir -p /etc/apk/keys
 cp /tmp/luci-fail2ban-manager.pem /etc/apk/keys/luci-fail2ban-manager.pem
-apk add /tmp/luci-app-fail2ban-manager-1.0.2-r1.apk
+apk add /tmp/luci-app-fail2ban-manager-1.0.3-r1.apk
 ```
 
 以实际产物文件名为准。不要全局关闭签名校验，不需要 `--force-overwrite`。页面位于 **服务 → Fail2ban**。如浏览器缓存旧页面，强制刷新后重新进入。
@@ -56,6 +56,12 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.2-r1.apk
 `log_files` 按旧到新排列，覆盖默认日志源。填写后不会自动补充 logread；需要审计记录时将已有系统日志文件也列入。不建议把普通共享文件作为日志源。
 
 时间保留日志原本的本地时间，只规范显示格式，不换算时区。无法识别的时间显示为空，不伪造日期。支持 OpenWrt 年份齐全的 syslog 时间和 Fail2ban 的 ISO 风格文件时间。
+
+## 封禁策略和解封时间
+
+页面读取各 jail 当前运行策略，展示固定时长或基础时长、重复违规递增及配置的最长时长，不修改防护规则。递增策略的初始时长是基础值；已有历史的地址可能直接进入更长的封禁。
+
+“当前封禁”的预计解封时间来自 Fail2ban 当前 ban ticket（`get <jail> banip --with-time`），包含实际递增时长，使用路由器本地时间，格式为 `2026-10-22 23:30:00`。永久封禁单独标注；旧版 Fail2ban 不支持查询或无法识别返回格式时显示“未知”，不以基础时长推算。解封由 Fail2ban 执行，页面每15秒刷新，实际执行可能有短暂延迟。
 
 ## GitHub Actions 与签名
 

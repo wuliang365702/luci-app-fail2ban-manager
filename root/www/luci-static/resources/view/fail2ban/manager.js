@@ -38,8 +38,23 @@ function emptyRow(target, columns, text) {
 
 function duration(seconds) {
     if (seconds < 0) return '\u6c38\u4e45';
+    if (seconds > 0 && seconds % 86400 === 0) return (seconds / 86400) + '\u5929';
+    if (seconds > 0 && seconds % 3600 === 0) return (seconds / 3600) + '\u5c0f\u65f6';
     if (seconds % 60 === 0) return (seconds / 60) + '\u5206\u949f';
     return seconds + '\u79d2';
+}
+
+function policyText(jail) {
+    if (jail.bantime_increment) {
+        return '\u9996\u6b21' + duration(jail.bantime) + '\uff0c\u91cd\u590d\u8fdd\u89c4\u9012\u589e' +
+            (jail.bantime_maximum > 0 ? '\uff0c\u6700\u957f' + duration(jail.bantime_maximum) : '');
+    }
+    return (jail.bantime_increment === false ? '\u56fa\u5b9a' : '') + duration(jail.bantime);
+}
+
+function expiryText(value) {
+    if (!value) return '\u672a\u77e5';
+    return value.permanent ? '\u6c38\u4e45\u5c01\u7981' : (value.time || '\u672a\u77e5');
 }
 
 return view.extend({
@@ -109,7 +124,7 @@ return view.extend({
             self.policies.appendChild(E('tr', { 'class': 'tr' }, [
                 cell(jail.label), cell(String(jail.failed)),
                 cell(duration(jail.findtime) + ' / ' + jail.maxretry + '\u6b21'),
-                cell(duration(jail.bantime))
+                cell(policyText(jail))
             ]));
             (jail.ips || []).forEach(function(ip) {
                 var command = self.writable ? E('button', {
@@ -117,13 +132,13 @@ return view.extend({
                     'click': function() { self.confirmUnban(jail.jail, ip); },
                     'aria-label': '\u89e3\u5c01 ' + ip
                 }, '\u89e3\u5c01') : '\u53ea\u8bfb';
-                rows.push(E('tr', { 'class': 'tr' }, [cell(ip), cell(jail.label), cell(command)]));
+                rows.push(E('tr', { 'class': 'tr' }, [cell(ip), cell(jail.label), cell(expiryText((jail.expirations || {})[ip])), cell(command)]));
             });
         });
         if (!jails.length) emptyRow(self.policies, 4, '\u6682\u65e0\u8fd0\u884c\u7684\u670d\u52a1');
         self.historyWarning.textContent = (data.history_warnings || []).length ? '\u65e5\u5fd7\u53ef\u80fd\u4e0d\u5b8c\u6574\uff1a' + data.history_warnings.join(', ') : '';
         rows.forEach(function(row) { self.bans.appendChild(row); });
-        if (!rows.length) emptyRow(self.bans, 3, data.ok ? '\u5f53\u524d\u65e0\u5c01\u7981 IP' : '\u65e0\u6cd5\u83b7\u53d6\u5c01\u7981\u540d\u5355');
+        if (!rows.length) emptyRow(self.bans, 4, data.ok ? '\u5f53\u524d\u65e0\u5c01\u7981 IP' : '\u65e0\u6cd5\u83b7\u53d6\u5c01\u7981\u540d\u5355');
         var events = (data.events || []).filter(function(event) { return !group || event.jail === group; });
         events.forEach(function(event) {
             self.events.appendChild(E('tr', { 'class': 'tr' }, [cell(formatTime(event.time)), cell(labels[event.jail] || event.jail), cell(actions[event.action] || event.action), cell(event.ip)]));
@@ -140,8 +155,8 @@ return view.extend({
         self.group = E('select', { 'aria-label': '\u670d\u52a1\u7b5b\u9009', 'style': 'max-width:100%;min-width:0', 'change': function() { self.draw(); } }, [
             E('option', { 'value': '' }, '\u5168\u90e8\u670d\u52a1')
         ]);
-        self.policies = table(['\u670d\u52a1', '\u5f53\u524d\u5931\u8d25\u8ba1\u6570', '\u5931\u8d25\u9608\u503c', '\u5c01\u7981\u65f6\u957f']);
-        self.bans = table(['IP', '\u670d\u52a1', '\u64cd\u4f5c']);
+        self.policies = table(['\u670d\u52a1', '\u5f53\u524d\u5931\u8d25\u8ba1\u6570', '\u5931\u8d25\u9608\u503c', '\u5c01\u7981\u7b56\u7565']);
+        self.bans = table(['IP', '\u670d\u52a1', '\u9884\u8ba1\u89e3\u5c01\u65f6\u95f4', '\u64cd\u4f5c']);
         self.events = table(['\u65f6\u95f4', '\u670d\u52a1', '\u4e8b\u4ef6', 'IP']);
         var refresh = E('button', { 'class': 'btn cbi-button-action', 'type': 'button', 'click': function() {
             refresh.disabled = true;

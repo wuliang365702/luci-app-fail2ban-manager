@@ -27,8 +27,9 @@ function E(tag, attrs, children) {
 const fixture = {
     ok:true, unavailable:[], history_warnings:[],
     jails:[
-        {jail:'dropbear', label:'SSH', failed:0, maxretry:5,findtime:600,bantime:600,ips:[]},
-        {jail:'nginx-auth',label:'nginx-auth',failed:2,maxretry:4,findtime:300,bantime:-1,ips:['2001:db8::10']}
+        {jail:'dropbear', label:'SSH', failed:0, maxretry:5,findtime:600,bantime:3600,bantime_increment:true,bantime_maximum:604800,ips:['192.0.2.10'],expirations:{'192.0.2.10':{time:'2026-10-23 23:30:00'}}},
+        {jail:'luci-auth',label:'Web',failed:0,maxretry:5,findtime:600,bantime:600,bantime_increment:false,ips:[]},
+        {jail:'nginx-auth',label:'nginx-auth',failed:2,maxretry:4,findtime:300,bantime:-1,ips:['2001:db8::10'],expirations:{'2001:db8::10':{permanent:true}}}
     ],
     events:[{time:'2026-09-06 22:09:12',jail:'nginx-auth',action:'Ban',ip:'2001:db8::10'},
             {time:'Fri Oct 16 10:18:02 2026',jail:'retired-jail',action:'Unban',ip:'192.0.2.10'}]
