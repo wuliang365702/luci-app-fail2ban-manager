@@ -15,7 +15,13 @@ assert.equal(context.formatTime(new Date(2026, 8, 6, 22, 9, 12)), '2026-09-06 22
 assert.equal(context.duration(-1), '\u6c38\u4e45');
 assert.equal(context.duration(30), '30\u79d2');
 assert.equal(context.duration(600), '10\u5206\u949f');
-assert.equal(context.policyText({bantime:3600,bantime_increment:true,bantime_maximum:604800}), '\u9996\u6b211\u5c0f\u65f6\uff0c\u91cd\u590d\u8fdd\u89c4\u9012\u589e\uff0c\u6700\u957f7\u5929');
+assert.equal(context.policyText({bantime:3600,bantime_increment:true,bantime_maximum:604800}), '\u57fa\u78401\u5c0f\u65f6\uff0c\u91cd\u590d\u8fdd\u89c4\u9012\u589e\uff0c\u6700\u957f7\u5929');
+assert.equal(context.remainingText({expires_at:7300},100), '2\u5c0f\u65f6');
+assert.equal(context.remainingText({expires_at:100},100), '\u7b49\u5f85\u89e3\u5c01');
+assert.equal(context.remainingText({permanent:true},100), '\u6c38\u4e45');
+assert.equal(context.remainingText({},100), '\u672a\u77e5');
+assert.equal(context.banDuration({duration:7200}), '2\u5c0f\u65f6');
+assert(!source.includes('new Date()'));
 assert.equal(context.expiryText({time:'2026-10-22 23:30:00'}), '2026-10-22 23:30:00');
 assert.equal(context.expiryText({permanent:true}), '\u6c38\u4e45\u5c01\u7981');
 assert.equal(context.expiryText(null), '\u672a\u77e5');

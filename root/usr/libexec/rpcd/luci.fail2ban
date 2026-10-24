@@ -7,6 +7,7 @@ import subprocess
 import sys
 import stat
 import threading
+import time
 from pathlib import Path
 
 from fail2ban.client.csocket import CSocket
@@ -97,9 +98,14 @@ def jail_status(jail):
                     continue
                 expiry = re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?", match[3])
                 if int(match[2]) < 0:
-                    expirations[ip] = {"permanent": True}
+                    expirations[ip] = {"permanent": True, "duration": -1}
                 elif expiry:
-                    expirations[ip] = {"time": match[3][:19], "permanent": False}
+                    try:
+                        end = int(time.mktime(time.strptime(match[3][:19], "%Y-%m-%d %H:%M:%S")))
+                    except (ValueError, OverflowError, OSError):
+                        continue
+                    expirations[ip] = {"time": match[3][:19], "permanent": False,
+                                       "duration": int(match[2]), "expires_at": end}
     except ServiceError:
         pass
     increment, maximum = None, None
@@ -247,8 +253,13 @@ def snapshot():
         except (ServiceError, OSError, ValueError, TypeError):
             errors.append(jail)
     events, warnings = recent_events()
+    now = time.time()
+    zone = time.strftime("%z", time.localtime(now))
     return {"ok": not errors, "jails": jails, "unavailable": errors,
-            "events": events, "history_warnings": warnings, "event_limit": EVENT_LIMIT}
+            "events": events, "history_warnings": warnings, "event_limit": EVENT_LIMIT,
+            "router_time": int(now),
+            "router_time_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "router_timezone": "UTC" + zone[:3] + ":" + zone[3:] if zone else ""}
 
 
 def unban(params):

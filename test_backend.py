@@ -91,7 +91,16 @@ class BackendTests(unittest.TestCase):
     def test_ticket_expiry_uses_actual_incremented_duration(self):
         result = backend.jail_status('dropbear')
         self.assertEqual(result['expirations']['192.0.2.10']['time'], '2026-10-22 23:30:00')
+        self.assertEqual(result['expirations']['192.0.2.10']['duration'], 7200)
+        self.assertIsInstance(result['expirations']['192.0.2.10']['expires_at'], int)
         self.assertTrue(result['expirations']['2001:db8::10']['permanent'])
+
+    def test_snapshot_has_router_clock(self):
+        with patch.object(backend, 'recent_events', return_value=([], [])):
+            result = backend.snapshot()
+        self.assertIsInstance(result['router_time'], int)
+        self.assertRegex(result['router_time_text'], r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')
+        self.assertRegex(result['router_timezone'], r'^UTC[+-]\d{2}:\d{2}$')
 
     def test_expiry_unsupported_keeps_status_available(self):
         original = self.command
