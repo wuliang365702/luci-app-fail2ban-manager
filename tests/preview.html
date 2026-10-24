@@ -38,6 +38,19 @@ const rpc = {declare: options => options.method === 'snapshot' ? async () => {
     if (window.fixtureFailure) throw new Error('Fixture connection failure');
     if (window.fixtureUnavailable) return {ok:false,unavailable:['dropbear']};
     return structuredClone(fixture);
+} : options.method === 'save_policy' ? async (jail,findtime,maxretry,bantime,increment,maximum,expected) => {
+    window.lastPolicy = {jail,findtime,maxretry,bantime,increment,maximum,expected};
+    if (window.fixtureWriteFailure) return {ok:false,error:'policy_changed'};
+    Object.assign(fixture.jails.find(item => item.jail === jail),{findtime,maxretry,bantime,bantime_increment:increment,bantime_maximum:maximum});
+    return {ok:true};
+} : options.method === 'extend_ban' ? async (jail,ip,seconds,expected_end) => {
+    window.lastExtension = {jail,ip,seconds,expected_end};
+    if (window.fixtureWriteFailure) return {ok:false,error:'ban_changed'};
+    const expiry = fixture.jails.find(item => item.jail === jail).expirations[ip];
+    expiry.expires_at += seconds;
+    expiry.duration += seconds;
+    expiry.time = new Date((expiry.expires_at + 28800) * 1000).toISOString().slice(0,19).replace('T',' ');
+    return {ok:true};
 } : async (jail,ip) => {
     const entry = fixture.jails.find(item => item.jail === jail);
     entry.ips = entry.ips.filter(item => item !== ip);

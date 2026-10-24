@@ -22,6 +22,7 @@ jobs:
       - run: python3 test_backend.py
       - run: node test_frontend.cjs
       - run: python3 tests/check_package.py
+      - run: python3 -m unittest discover -s tests -p test_control.py
       - run: python3 -m unittest discover -s tests -p test_signing.py
 
   build:

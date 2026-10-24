@@ -8,7 +8,16 @@ import sys
 import stat
 import threading
 import time
+import configparser
+import contextlib
+import io
+import os
+import tempfile
 from pathlib import Path
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from fail2ban.client.csocket import CSocket
 
@@ -18,9 +27,16 @@ CONFIG = "/etc/fail2ban-manager.json"
 MAX_INPUT = 8192
 MAX_LOG_BYTES = 262144
 EVENT_LIMIT = 200
+OVERRIDE = '/etc/fail2ban/jail.d/zz-luci-manager.local'
+CONTROL = '/usr/lib/fail2ban-manager/control.py'
+PERSISTENT_CONTROL = '/etc/fail2ban/action.d/luci-manager.py'
+LOCK = '/var/lock/luci-fail2ban-manager.lock'
+CLIENT = ['/usr/bin/fail2ban-client']
+MAX_SECONDS = 315360000
 JAIL_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")
 EVENT_RE = re.compile(r"fail2ban\.actions(?:\s*\[\d+\])?\s*:?\s+\w+\s+\[(?P<jail>[A-Za-z0-9_.-]+)\]\s+(?P<action>Restore Ban|Ban|Unban)\s+(?P<ip>\S+)\s*$")
 AUDIT_RE = re.compile(r"luci-fail2ban(?:\[\d+\])?:\s+Manual unban jail=(?P<jail>[A-Za-z0-9_.-]+) ip=(?P<ip>\S+)\s*$")
+EXTEND_RE = re.compile(r'luci-fail2ban(?:\[\d+\])?:\s+(?P<action>Manual extend) jail=(?P<jail>[A-Za-z0-9_.-]+) ip=(?P<ip>\S+) seconds=\d+\s*$')
 
 
 def settings():
@@ -49,6 +65,10 @@ class ServiceError(Exception):
     pass
 
 
+class RollbackError(ServiceError):
+    pass
+
+
 def call(command):
     socket = settings().get("socket", SOCKET)
     if not isinstance(socket, str) or not socket.startswith("/"):
@@ -67,6 +87,218 @@ def normalize_ip(value):
     if not isinstance(value, str) or len(value) > 45 or "%" in value:
         raise ValueError("Invalid IP address")
     return str(ipaddress.ip_address(value))
+
+
+@contextlib.contextmanager
+def mutation_lock():
+    if fcntl is None:
+        raise ServiceError('Unsupported platform')
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ServiceError('Manager busy')
+        yield
+    finally:
+        os.close(fd)
+
+
+def valid_jail(value):
+    return isinstance(value, str) and JAIL_RE.fullmatch(value) and value in active_jails()
+
+
+def bounded_int(value, minimum, maximum):
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError('Invalid numeric value')
+    return value
+
+
+def atomic_override(data):
+    atomic_file(Path(OVERRIDE), data)
+
+
+def atomic_file(target, data):
+    if target.is_symlink():
+        raise ValueError('Unsafe override path')
+    if data is None:
+        target.unlink(missing_ok=True)
+        return
+    fd, name = tempfile.mkstemp(prefix='.luci-manager-', dir=target.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, target)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def client_command(args):
+    subprocess.run(CLIENT + args, check=True, timeout=20,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def policy_values(jail):
+    result = {key: int(call(['get', jail, key])) for key in ('findtime', 'maxretry', 'bantime')}
+    value = call(['get', jail, 'bantime.increment'])
+    result['increment'] = value is True or str(value).lower() in ('true', '1')
+    result['maximum'] = int(call(['get', jail, 'bantime.maxtime']) or 0)
+    return result
+
+
+def save_policy(params):
+    if settings().get('socket', SOCKET) != SOCKET:
+        return {'ok': False, 'error': 'unsupported_configuration'}
+    jail = params.get('jail')
+    if not valid_jail(jail):
+        return {'ok': False, 'error': 'invalid_jail'}
+    try:
+        desired = {key: bounded_int(params.get(key), 1 if key == 'maxretry' else 60,
+                                   1000 if key == 'maxretry' else MAX_SECONDS)
+                   for key in ('findtime', 'maxretry', 'bantime')}
+        if type(params.get('increment')) is not bool:
+            raise ValueError('Invalid increment')
+        desired['increment'] = params['increment']
+        desired['maximum'] = bounded_int(params.get('maximum'), 60, MAX_SECONDS)
+        if desired['increment'] and desired['maximum'] < desired['bantime']:
+            raise ValueError('Maximum below base duration')
+        if not isinstance(params.get('expected'), dict):
+            raise ValueError('Missing expected policy')
+    except ValueError:
+        return {'ok': False, 'error': 'invalid_policy'}
+    with mutation_lock():
+        previous = policy_values(jail)
+        if params['expected'] != previous:
+            return {'ok': False, 'error': 'policy_changed'}
+        path = Path(OVERRIDE)
+        if path.is_symlink():
+            raise ValueError('Unsafe override path')
+        original = path.read_bytes() if path.exists() else None
+        if original is not None and len(original) > 65536:
+            raise ValueError('Override too large')
+        cfg = configparser.ConfigParser(interpolation=None)
+        if original:
+            cfg.read_string(original.decode('utf-8'))
+        if not cfg.has_section(jail):
+            cfg.add_section(jail)
+        for key in ('findtime', 'maxretry', 'bantime'):
+            cfg[jail][key] = str(desired[key])
+        cfg[jail]['bantime.increment'] = str(desired['increment']).lower()
+        cfg[jail]['bantime.maxtime'] = str(desired['maximum'])
+        buffer = io.StringIO()
+        cfg.write(buffer)
+        reloaded = False
+        try:
+            atomic_override(buffer.getvalue().encode('utf-8'))
+            client_command(['-t'])
+            reloaded = True
+            client_command(['reload', jail])
+            if policy_values(jail) != desired:
+                raise ServiceError('Effective policy differs')
+        except (OSError, ValueError, ServiceError, subprocess.SubprocessError):
+            try:
+                atomic_override(original)
+            except OSError:
+                return {'ok': False, 'error': 'rollback_failed'}
+            if reloaded:
+                try:
+                    client_command(['reload', jail])
+                    if policy_values(jail) != previous:
+                        raise ServiceError('Rollback mismatch')
+                except (OSError, ServiceError, subprocess.SubprocessError):
+                    return {'ok': False, 'error': 'rollback_failed'}
+            return {'ok': False, 'error': 'policy_apply_failed'}
+        return {'ok': True, 'audit_warning': not audit('Policy saved jail=' + jail)}
+
+
+def extend_ban(params):
+    if settings().get('socket', SOCKET) != SOCKET:
+        return {'ok': False, 'error': 'unsupported_configuration'}
+    jail = params.get('jail')
+    try:
+        ip = normalize_ip(params.get('ip'))
+        seconds = bounded_int(params.get('seconds'), 1, MAX_SECONDS)
+        expected = bounded_int(params.get('expected_end'), 1, 253402300799)
+    except ValueError:
+        return {'ok': False, 'error': 'invalid_extension'}
+    if not valid_jail(jail):
+        return {'ok': False, 'error': 'invalid_jail'}
+    with mutation_lock():
+        current = jail_status(jail)
+        expiry = current['expirations'].get(ip)
+        if ip not in current['ips']:
+            return {'ok': False, 'error': 'not_banned'}
+        if not expiry or expiry.get('permanent') or expiry.get('expires_at') != expected:
+            return {'ok': False, 'error': 'ban_changed'}
+        ensure_control(jail)
+        if call(['get', jail, 'action', 'luci-manager', 'manager_api_version']) != 1:
+            return {'ok': False, 'error': 'unsupported_extension'}
+        result = call(['set', jail, 'action', 'luci-manager', 'extend',
+                       json.dumps({'ip': ip, 'seconds': seconds, 'expected_end': expected})])
+        if not isinstance(result, dict) or not result.get('ok'):
+            raise ServiceError('Extension failed')
+        updated = jail_status(jail)['expirations'].get(ip, {})
+        if abs(updated.get('expires_at', 0) - expected - seconds) > 1:
+            raise ServiceError('Extension verification failed')
+        return {'ok': True, 'expires_at': updated['expires_at'],
+                'audit_warning': not audit(f'Manual extend jail={jail} ip={ip} seconds={seconds}')}
+
+
+def ensure_control(jail):
+    previous_actions = set(call(['get',jail,'actions']))
+    path = Path(OVERRIDE)
+    if path.is_symlink():
+        raise ValueError('Unsafe override path')
+    original = path.read_bytes() if path.exists() else None
+    if original is not None and len(original) > 65536:
+        raise ValueError('Override too large')
+    cfg = configparser.ConfigParser(interpolation=None)
+    if original:
+        cfg.read_string(original.decode('utf-8'))
+    helper = Path(PERSISTENT_CONTROL)
+    if helper.is_symlink():
+        raise ValueError('Unsafe helper path')
+    previous_helper = helper.read_bytes() if helper.exists() else None
+    source = Path(CONTROL).read_bytes()
+    if previous_helper is not None and not previous_helper.startswith(b'"""On-demand Fail2ban Python action:'):
+        raise ValueError('Refusing to overwrite an unrecognized helper')
+    action = '%(known/action)s\n' + PERSISTENT_CONTROL + '[actname=luci-manager]'
+    if previous_helper == source and cfg.has_section(jail) and cfg[jail].get('action') == action and 'luci-manager' in call(['get',jail,'actions']):
+        return
+    if not cfg.has_section(jail):
+        cfg.add_section(jail)
+    if 'action' in cfg[jail] and cfg[jail]['action'] != action:
+        raise ValueError('Unrecognized override action; refusing replacement')
+    cfg[jail]['action'] = action
+    buffer = io.StringIO()
+    cfg.write(buffer)
+    try:
+        atomic_file(helper, source)
+        atomic_override(buffer.getvalue().encode('utf-8'))
+        client_command(['-t'])
+        client_command(['reload',jail])
+        if set(call(['get',jail,'actions'])) != previous_actions | {'luci-manager'}:
+            raise ServiceError('Original enforcement actions changed')
+    except (OSError, ValueError, ServiceError, subprocess.SubprocessError):
+        try:
+            atomic_override(original)
+            atomic_file(helper, previous_helper)
+            client_command(['reload',jail])
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RollbackError('Control rollback failed') from error
+        raise
+
+
+def audit(message):
+    try:
+        subprocess.run(['/usr/bin/logger', '-p', 'authpriv.notice', '-t', 'luci-fail2ban', message],
+                       check=True, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def jail_status(jail):
@@ -112,8 +344,7 @@ def jail_status(jail):
     try:
         value = call(["get", jail, "bantime.increment"])
         increment = value is True or str(value).lower() in ("true", "1")
-        if increment:
-            maximum = int(call(["get", jail, "bantime.maxtime"]))
+        maximum = int(call(["get", jail, "bantime.maxtime"]) or 0)
     except (ServiceError, TypeError, ValueError):
         pass
     return {
@@ -219,7 +450,7 @@ def recent_events():
     seen_events = set()
     for lines in batches:
         for line in lines:
-            match = EVENT_RE.search(line) or AUDIT_RE.search(line)
+            match = EVENT_RE.search(line) or AUDIT_RE.search(line) or EXTEND_RE.search(line)
             if not match:
                 continue
             try:
@@ -293,12 +524,19 @@ def dispatch(method, params):
         return snapshot()
     if method == "unban":
         return unban(params)
+    if method == 'save_policy':
+        return save_policy(params)
+    if method == 'extend_ban':
+        return extend_ban(params)
     return {"ok": False, "error": "invalid_method"}
 
 
 def main():
     if sys.argv[1:] == ["list"]:
-        result = {"snapshot": {}, "unban": {"jail": "", "ip": ""}}
+        result = {"snapshot": {}, "unban": {"jail": "", "ip": ""},
+                  "save_policy": {"jail": "", "findtime": 0, "maxretry": 0, "bantime": 0,
+                                  "increment": False, "maximum": 0, "expected": {}},
+                  "extend_ban": {"jail": "", "ip": "", "seconds": 0, "expected_end": 0}}
     elif len(sys.argv) == 3 and sys.argv[1] == "call":
         try:
             raw = sys.stdin.read(MAX_INPUT + 1)
@@ -308,8 +546,10 @@ def main():
             if not isinstance(params, dict):
                 raise ValueError("Invalid request")
             result = dispatch(sys.argv[2], params)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, configparser.Error):
             result = {"ok": False, "error": "invalid_request"}
+        except RollbackError:
+            result = {"ok": False, "error": "rollback_failed"}
         except (ServiceError, OSError):
             result = {"ok": False, "error": "service_unavailable"}
     else:

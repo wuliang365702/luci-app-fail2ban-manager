@@ -1,11 +1,11 @@
 {
   "luci-app-fail2ban-manager": {
-    "description": "View Fail2ban status and events; unban individual addresses",
+    "description": "View Fail2ban; edit bounded policies and extend or unban individual addresses",
     "read": {
       "ubus": { "luci.fail2ban": [ "snapshot" ] }
     },
     "write": {
-      "ubus": { "luci.fail2ban": [ "unban" ] }
+      "ubus": { "luci.fail2ban": [ "unban", "save_policy", "extend_ban" ] }
     }
   }
 }

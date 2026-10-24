@@ -1,8 +1,8 @@
 # LuCI Fail2ban Manager
 
-OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 IP、最近 200 条封禁/解封记录，以及手动解封单个 IP。时间格式为 `2026-09-06 22:09:12`。
+OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 IP、最近 200 条记录，按服务编辑防护策略，手动延长或解封单个 IP。时间格式为 `2026-09-06 22:09:12`。
 
-**这是管理工具，不是防护配置向导。** 安装、升级、卸载本插件不会写入 Fail2ban 配置、创建 jail、修改防火墙或重启 Fail2ban。只重新加载 rpcd 以注册/移除管理接口。依赖包首次安装时可能运行其自己的官方初始化脚本；已有 Fail2ban 配置由其包管理机制维护。
+**安装和升级不更改现有防护策略。** 软件包生命周期只重新加载 rpcd，不创建 jail、不修改防火墙、不重启 Fail2ban。只有有写权限的管理员在弹窗中明确确认修改时，才写入下述专用配置并对所选 jail 热加载。依赖包首次安装时可能运行其自己的官方初始化脚本；已有 Fail2ban 配置由其包管理机制维护。
 
 ## 安装条件
 
@@ -24,7 +24,7 @@ OpenWrt LuCI 的 Fail2ban 管理页面：查看运行中的 jail、当前封禁 
 ```sh
 mkdir -p /etc/apk/keys
 cp /tmp/luci-fail2ban-manager.pem /etc/apk/keys/luci-fail2ban-manager.pem
-apk add /tmp/luci-app-fail2ban-manager-1.0.4-r1.apk
+apk add /tmp/luci-app-fail2ban-manager-1.0.5-r1.apk
 ```
 
 以实际产物文件名为准。不要全局关闭签名校验，不需要 `--force-overwrite`。页面位于 **服务 → Fail2ban**。如浏览器缓存旧页面，强制刷新后重新进入。
@@ -33,8 +33,8 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.4-r1.apk
 
 ## 安全边界
 
-- 使用 LuCI 登录会话和 rpcd ACL；只读账号无解封权限。
-- 唯一写操作是对当前运行 jail 中一个已封禁 IP 执行解封；再次读取确认结果。
+- 使用 LuCI 登录会话和 rpcd ACL；只读账号不能改策略、延长或解封。
+- 写操作仅包括活动 jail 的五项数值/开关策略，以及单个当前封禁 IP 的延长和解封；不能创建 jail、传入 shell、编辑过滤器、动作命令或任意文件。
 - jail 从 Fail2ban 运行实例发现，不接受任意 shell 命令；IP 使用标准库严格校验，支持 IPv4/IPv6，不接受网段、接口后缀或命令参数。
 - 使用 Fail2ban 本地 Unix socket，没有新增网络监听端口。socket 本身只应由可信管理员访问。
 - 手动解封写入 `authpriv.notice` 系统日志。记录保留时间取决于已有日志配置，本插件不建立独立持久化审计库。
@@ -59,11 +59,20 @@ apk add /tmp/luci-app-fail2ban-manager-1.0.4-r1.apk
 
 ## 封禁策略和解封时间
 
-页面读取各 jail 当前运行策略，展示固定时长或基础时长、重复违规递增及配置的最长时长，不修改防护规则。递增策略的初始时长是基础值；已有历史的地址可能直接进入更长的封禁。
+页面读取各 jail 当前运行策略，展示固定时长或基础时长、重复违规递增及配置的最长时长。基础时长不是对每个 IP 的首次时长保证；已有历史的地址可能直接进入更长的封禁。
 
 “当前封禁”的预计解封时间来自 Fail2ban 当前 ban ticket（`get <jail> banip --with-time`），包含实际递增时长，使用路由器本地时间，格式为 `2026-10-22 23:30:00`。永久封禁单独标注；旧版 Fail2ban 不支持查询或无法识别返回格式时显示“未知”，不以基础时长推算。解封由 Fail2ban 执行，页面每15秒刷新，实际执行可能有短暂延迟。
 
-同时显示本次实际封禁时长和剩余时间；剩余时间按路由器采样时钟计算，随15秒刷新更新，不依赖访问电脑的时钟。顶部将运行状态和最后更新时间分开，标明路由器 UTC 偏移；日志和解封时间沿用路由器本地时间。更新失败时保留上次成功数据和时间，并明确标记更新失败，不能据此认定封禁仍在生效。“观察窗口内失败次数”是 Fail2ban 当前跟踪的认证失败次数，不是攻击者数量。
+同时显示本次实际封禁时长和剩余时间；剩余时间按路由器采样时钟计算，随15秒刷新更新，不依赖访问电脑的时钟。顶部将运行状态和最后更新时间分开，标明路由器 UTC 偏移；日志和解封时间沿用路由器本地时间。更新失败时保留上次成功数据和时间，并明确标记更新失败，不能据此认定封禁仍在生效。“失败次数”是 Fail2ban 当前观察窗口内跟踪的认证失败次数，不是攻击者数量。
+
+## 策略设置与手动延长
+
+- “设置”弹窗只允许观察时间、失败次数、基础封禁时长、递增开关、最长封禁时长。仅写 `/etc/fail2ban/jail.d/zz-luci-manager.local` 的目标 jail，保留原配置、其他 jail 及动作；配置测试通过后只热加载目标 jail。发生失败会回退，回退失败单独报警。并发修改使用文件锁及旧值比较，不静默覆盖别人的更新。
+- “延长封禁”从当前解封时间追加，不从当前时间重新计时，不受自动递增的7天上限约束。为避免溢出，单次追加和累计本次时长有3650天安全上限。永久封禁、已经解封及已变化的记录不能追加。不会先解封再封禁，也不会临时修改全局 bantime。
+- 手动延长使用 Fail2ban 1.1 的 Python action 和受锁保护的 ticket。首次使用时将专用辅助模块保存到 `/etc/fail2ban/action.d/luci-manager.py`，在上述专用覆盖配置中通过 `%(known/action)s` 保留原动作并追加辅助动作。它不执行防火墙命令；其他 IP 的封禁仍完全由原动作处理。辅助模块及覆盖配置不归 APK 所有，卸载界面后仍保留有效配置，避免 Fail2ban 引用消失的脚本。
+- 手动到期时间随原 Fail2ban 数据库存储，辅助模块在服务启动时恢复手动记录，避免被自动上限截短。路由器使用内存数据库时，整机重启仍会丢失数据；本插件不更改数据库存储位置和历史保留配置。
+- 单 IP 延长目前按 Fail2ban 1.1 ticket 结构测试并做兼容检查；不支持的结构会拒绝操作，不以重封或全局设置绕过。输入参数和数值边界在后端再次验证。日志记录策略保存、手动延长和解封。
+- 自定义 socket 仍可查看和解封，但策略与延长操作仅支持默认 OpenWrt 实例，避免把配置写入错误的服务实例。
 
 ## GitHub Actions 与签名
 
@@ -91,6 +100,7 @@ openssl pkey -in private-key.pem -pubout -out luci-fail2ban-manager.pem
 python3 test_backend.py
 node test_frontend.cjs
 python3 tests/check_package.py
+python3 -m unittest discover -s tests -p test_control.py
 python3 -m unittest discover -s tests -p test_signing.py
 ```
 

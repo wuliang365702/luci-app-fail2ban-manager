@@ -6,6 +6,7 @@ import re
 root = Path(__file__).resolve().parents[1]
 expected = {
     'usr/libexec/rpcd/luci.fail2ban',
+    'usr/lib/fail2ban-manager/control.py',
     'usr/share/rpcd/acl.d/luci-app-fail2ban-manager.json',
     'usr/share/luci/menu.d/luci-app-fail2ban-manager.json',
     'www/luci-static/resources/view/fail2ban/manager.js',
@@ -16,7 +17,7 @@ for filename in (root / 'root').rglob('*.json'):
     json.loads(filename.read_text())
 acl = json.loads((root / 'root/usr/share/rpcd/acl.d/luci-app-fail2ban-manager.json').read_text())['luci-app-fail2ban-manager']
 assert acl['read']['ubus'] == {'luci.fail2ban': ['snapshot']}
-assert acl['write']['ubus'] == {'luci.fail2ban': ['unban']}
+assert acl['write']['ubus'] == {'luci.fail2ban': ['unban', 'save_policy', 'extend_ban']}
 makefile = (root / 'Makefile').read_text()
 assert 'define Package/luci-app-fail2ban-manager\n  PKGARCH:=all\n' in makefile
 for forbidden in ('/etc/init.d/fail2ban', '/etc/init.d/firewall', 'uci set', 'uci commit'):

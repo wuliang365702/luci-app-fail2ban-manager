@@ -2,7 +2,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-fail2ban-manager
-PKG_VERSION:=1.0.4
+PKG_VERSION:=1.0.5
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=wuliang365702
@@ -14,15 +14,15 @@ define Package/luci-app-fail2ban-manager
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=Fail2ban status and individual unban
+  TITLE:=Fail2ban status and bounded protection controls
   URL:=https://github.com/wuliang365702/luci-app-fail2ban-manager
   DEPENDS:=+luci-base +rpcd +fail2ban +python3-light +python3-codecs
 endef
 
 define Package/luci-app-fail2ban-manager/description
-  Discover active Fail2ban jails, inspect bans and recent events, and unban
-  individual addresses using LuCI authentication. Existing protection settings
-  are never installed, replaced, enabled or restarted by this manager.
+  Inspect Fail2ban jails and bans, edit bounded policy fields, and extend or
+  unban individual addresses using LuCI authentication. Package installation
+  preserves existing protection. Changes require explicit administrator action.
 endef
 
 define Build/Compile
@@ -31,6 +31,8 @@ endef
 define Package/luci-app-fail2ban-manager/install
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd
 	$(INSTALL_BIN) ./root/usr/libexec/rpcd/luci.fail2ban $(1)/usr/libexec/rpcd/
+	$(INSTALL_DIR) $(1)/usr/lib/fail2ban-manager
+	$(INSTALL_DATA) ./root/usr/lib/fail2ban-manager/control.py $(1)/usr/lib/fail2ban-manager/
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/*.json $(1)/usr/share/rpcd/acl.d/
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/*.json $(1)/usr/share/luci/menu.d/

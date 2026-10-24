@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+import contextlib
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -127,6 +128,105 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(ssh['bantime_increment'])
         self.assertEqual(ssh['bantime_maximum'], 604800)
         self.assertFalse(backend.jail_status('luci-auth')['bantime_increment'])
+
+    def policy_request(self):
+        return {'jail':'dropbear', 'findtime':600, 'maxretry':5, 'bantime':3600,
+                'increment':True, 'maximum':604800,
+                'expected':{'findtime':600,'maxretry':5,'bantime':600,'increment':True,'maximum':604800}}
+
+    def test_policy_persists_only_whitelisted_override_and_reloads_one_jail(self):
+        params = self.policy_request()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'manager.local'
+            path.write_text('[other-jail]\nmaxretry = 9\n')
+            with patch.object(backend,'OVERRIDE',str(path)), patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'client_command') as client, patch.object(backend,'audit',return_value=True), patch.object(backend,'policy_values',side_effect=[params['expected'],{k:v for k,v in params.items() if k not in ('jail','expected')} ]):
+                self.assertTrue(backend.save_policy(params)['ok'])
+            text = path.read_text()
+            self.assertIn('[other-jail]',text)
+            self.assertIn('maxretry = 9',text)
+            self.assertIn('bantime = 3600',text)
+            self.assertNotIn('action =',text)
+            self.assertEqual(client.call_args_list, [unittest.mock.call(['-t']), unittest.mock.call(['reload','dropbear'])])
+
+    def test_policy_test_failure_restores_exact_original(self):
+        params = self.policy_request()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'manager.local'
+            old = b'# retained\n[other-jail]\nmaxretry=9\n'
+            path.write_bytes(old)
+            with patch.object(backend,'OVERRIDE',str(path)), patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'client_command',side_effect=backend.subprocess.CalledProcessError(1,'test')) as client, patch.object(backend,'policy_values',return_value=params['expected']):
+                self.assertEqual(backend.save_policy(params)['error'],'policy_apply_failed')
+            self.assertEqual(path.read_bytes(),old)
+            client.assert_called_once_with(['-t'])
+
+    def test_policy_reload_failure_rolls_back_and_checks_previous_values(self):
+        params = self.policy_request()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'manager.local'
+            with patch.object(backend,'OVERRIDE',str(path)), patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'client_command',side_effect=[None,backend.subprocess.CalledProcessError(1,'reload'),None]), patch.object(backend,'policy_values',return_value=params['expected']):
+                self.assertEqual(backend.save_policy(params)['error'],'policy_apply_failed')
+            self.assertFalse(path.exists())
+
+    def test_invalid_policy_and_stale_values_do_not_write(self):
+        for key, value in [('findtime',True),('maxretry',0),('bantime',-1),('increment','yes'),('maximum',1)]:
+            params = self.policy_request()
+            params[key] = value
+            with patch.object(backend,'atomic_override') as writer:
+                self.assertEqual(backend.save_policy(params)['error'],'invalid_policy')
+                writer.assert_not_called()
+        params = self.policy_request()
+        params['expected'] = {}
+        with patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'atomic_override') as writer:
+            self.assertEqual(backend.save_policy(params)['error'],'policy_changed')
+            writer.assert_not_called()
+
+    def test_extend_accepts_more_than_seven_days_without_global_setters(self):
+        end = backend.jail_status('dropbear')['expirations']['192.0.2.10']['expires_at']
+        original = self.command
+        extended = False
+        def command(args):
+            nonlocal extended
+            if args[:1] == ['get'] and args[2:] == ['actions']:
+                return ['luci-manager']
+            if args[2:] == ['action','luci-manager','manager_api_version']:
+                return 1
+            if args[:5] == ['set','dropbear','action','luci-manager','extend']:
+                extended = True
+                self.calls.append(args)
+                return {'ok':True}
+            if extended and args[2:] == ['banip','--with-time']:
+                return ['192.0.2.10 start + 2599200 = ' + backend.time.strftime('%Y-%m-%d %H:%M:%S',backend.time.localtime(end+2592000))]
+            return original(args)
+        self.call_mock.side_effect = command
+        with patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'audit',return_value=True), patch.object(backend,'ensure_control'):
+            result = backend.extend_ban({'jail':'dropbear','ip':'192.0.2.10','seconds':2592000,'expected_end':end})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['expires_at'],end+2592000)
+        self.assertFalse(any(args[0]=='set' and args[2] in ('bantime','unbanip','banip') for args in self.calls))
+
+    def test_extension_rejects_invalid_stale_permanent_or_absent_bans(self):
+        for ip, seconds, end, error in [('bad;command',60,1,'invalid_extension'),('192.0.2.10',True,1,'invalid_extension'),('192.0.2.10',-1,1,'invalid_extension'),('192.0.2.99',60,1,'not_banned'),('192.0.2.10',60,1,'ban_changed'),('2001:db8::10',60,1,'ban_changed')]:
+            with patch.object(backend,'mutation_lock',contextlib.nullcontext):
+                self.assertEqual(backend.extend_ban({'jail':'dropbear','ip':ip,'seconds':seconds,'expected_end':end})['error'],error)
+        self.assertFalse(any(args[0]=='set' for args in self.calls))
+
+    def test_policy_restore_write_failure_is_reported(self):
+        params = self.policy_request()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(backend,'OVERRIDE',str(Path(directory)/'manager.local')), patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'policy_values',return_value=params['expected']), patch.object(backend,'atomic_override',side_effect=[None,OSError('disk failure')]), patch.object(backend,'client_command',side_effect=backend.subprocess.CalledProcessError(1,'test')):
+                self.assertEqual(backend.save_policy(params)['error'],'rollback_failed')
+
+    def test_symlink_override_refused_without_writes(self):
+        params = self.policy_request()
+        with patch.object(backend,'mutation_lock',contextlib.nullcontext), patch.object(backend,'policy_values',return_value=params['expected']), patch.object(backend.Path,'is_symlink',return_value=True), patch.object(backend,'atomic_override') as writer:
+            with self.assertRaises(ValueError): backend.save_policy(params)
+            writer.assert_not_called()
+
+    def test_custom_socket_cannot_mutate_another_default_instance(self):
+        with patch.object(backend,'settings',return_value={'socket':'/tmp/custom.sock'}), patch.object(backend,'atomic_override') as writer:
+            self.assertEqual(backend.save_policy(self.policy_request())['error'],'unsupported_configuration')
+            self.assertEqual(backend.extend_ban({})['error'],'unsupported_configuration')
+            writer.assert_not_called()
 
     def test_logs_are_bounded_and_only_known_events_are_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
